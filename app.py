@@ -1,5 +1,7 @@
 import streamlit as st
 
+from pawpal_system import Owner, Pet, Scheduler, Task
+
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 st.title("🐾 PawPal+")
@@ -51,15 +53,19 @@ if "tasks" not in st.session_state:
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    task_title = st.text_input("Task title", value="Morning walk")
+    task_desc = st.text_input("Task description", value="Morning walk")
 with col2:
-    duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=20)
+    duration = st.number_input("Time (minutes)", min_value=1, max_value=240, value=20)
 with col3:
-    priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
+    frequency = st.selectbox("Frequency", ["daily", "weekly", "once"], index=0)
 
 if st.button("Add task"):
     st.session_state.tasks.append(
-        {"title": task_title, "duration_minutes": int(duration), "priority": priority}
+        {
+            "description": task_desc,
+            "time_minutes": int(duration),
+            "frequency": frequency,
+        }
     )
 
 if st.session_state.tasks:
@@ -74,15 +80,36 @@ st.subheader("Build Schedule")
 st.caption("This button should call your scheduling logic once you implement it.")
 
 if st.button("Generate schedule"):
-    st.warning(
-        "Not implemented yet. Next step: create your scheduling logic (classes/functions) and call it here."
-    )
-    st.markdown(
-        """
-Suggested approach:
-1. Design your UML (draft).
-2. Create class stubs (no logic).
-3. Implement scheduling behavior.
-4. Connect your scheduler here and display results.
-"""
-    )
+    if not st.session_state.tasks:
+        st.warning("Add at least one task before generating a schedule.")
+    else:
+        owner = Owner(owner_name)
+        pet = Pet(pet_name, species)
+        for row in st.session_state.tasks:
+            pet.add_task(
+                Task(
+                    description=row["description"],
+                    time_minutes=int(row["time_minutes"]),
+                    frequency=row["frequency"],
+                )
+            )
+        owner.add_pet(pet)
+        plan = Scheduler().build_plan(owner)
+
+        st.success(f"Schedule for **{owner.name}** — **{pet.name}** ({pet.species})")
+        rows = []
+        for slot in plan.slots:
+            t = slot.get_task()
+            p = slot.get_pet()
+            rows.append(
+                {
+                    "Order": slot.get_order(),
+                    "Pet": p.name,
+                    "Task": t.description,
+                    "Minutes": t.time_minutes,
+                    "Frequency": t.frequency,
+                    "Done": t.completed,
+                    "Why": slot.get_explanation(),
+                }
+            )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
