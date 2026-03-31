@@ -1,6 +1,19 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date, timedelta
+
+
+def _normalize_hhmm(value: str) -> str:
+    """Normalize a clock time to zero-padded HH:MM for sorting and comparisons."""
+    parts = value.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"start_time must be HH:MM, got {value!r}")
+    hour, minute = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid clock time: {value!r}")
+    return f"{hour:02d}:{minute:02d}"
 
 
 class Task:
@@ -12,12 +25,16 @@ class Task:
         time_minutes: int,
         frequency: str,
         completed: bool = False,
+        due_date: date | None = None,
+        start_time: str = "09:00",
     ) -> None:
-        """Create a task with description, duration, frequency, and completion flag."""
+        """Create a task with description, duration, frequency, optional due date and start time."""
         self._description = description
         self._time_minutes = time_minutes
         self._frequency = frequency.strip().lower()
         self._completed = completed
+        self._due_date = due_date
+        self._start_time = _normalize_hhmm(start_time)
 
     @property
     def description(self) -> str:
@@ -38,6 +55,16 @@ class Task:
     def completed(self) -> bool:
         """Return whether the task is marked done."""
         return self._completed
+
+    @property
+    def due_date(self) -> date | None:
+        """Return the calendar day this task is due, if set."""
+        return self._due_date
+
+    @property
+    def start_time(self) -> str:
+        """Return scheduled start of day as HH:MM (used for sorting and conflict checks)."""
+        return self._start_time
 
     def mark_complete(self) -> None:
         """Mark this task as completed."""
@@ -72,6 +99,39 @@ class Pet:
         """Append a task to this pet's list."""
         self._tasks.append(task)
 
+    def complete_task(self, task: Task) -> None:
+        """Mark a task done; for daily/weekly, append the next occurrence with an updated due date."""
+        if task not in self._tasks:
+            return
+        task.mark_complete()
+        freq = task.frequency
+        if freq == "daily":
+            base = task.due_date if task.due_date is not None else date.today()
+            new_due = base + timedelta(days=1)
+            self.add_task(
+                Task(
+                    task.description,
+                    task.time_minutes,
+                    "daily",
+                    completed=False,
+                    due_date=new_due,
+                    start_time=task.start_time,
+                )
+            )
+        elif freq == "weekly":
+            base = task.due_date if task.due_date is not None else date.today()
+            new_due = base + timedelta(weeks=1)
+            self.add_task(
+                Task(
+                    task.description,
+                    task.time_minutes,
+                    "weekly",
+                    completed=False,
+                    due_date=new_due,
+                    start_time=task.start_time,
+                )
+            )
+
 
 class Owner:
     """An owner who has one or more pets."""
@@ -85,6 +145,11 @@ class Owner:
     def name(self) -> str:
         """Return the owner's name."""
         return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        """Set the owner's name (e.g. when edited in the UI)."""
+        self._name = value
 
     @property
     def pets(self) -> list[Pet]:
@@ -149,6 +214,57 @@ class Scheduler:
     def __init__(self) -> None:
         """Create a scheduler with no internal state."""
         pass
+
+    @staticmethod
+    def _hhmm_sort_key(task: Task) -> tuple[int, int]:
+        """Sort key for normalized HH:MM strings (hour, minute)."""
+        h, m = task.start_time.split(":")
+        return (int(h), int(m))
+
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Return tasks ordered by scheduled start time (HH:MM), earliest first."""
+        return sorted(tasks, key=self._hhmm_sort_key)
+
+    def filter_tasks(
+        self,
+        owner: Owner,
+        *,
+        completed: bool | None = None,
+        pet_name: str | None = None,
+    ) -> list[tuple[Pet, Task]]:
+        """Return (pet, task) pairs matching optional completion and pet name filters."""
+        out: list[tuple[Pet, Task]] = []
+        name_needle = pet_name.strip().lower() if pet_name is not None else None
+        for pet in owner.pets:
+            if name_needle is not None and pet.name.lower() != name_needle:
+                continue
+            for task in pet.tasks:
+                if completed is not None and task.completed != completed:
+                    continue
+                out.append((pet, task))
+        return out
+
+    def schedule_time_conflicts(self, owner: Owner) -> list[str]:
+        """
+        Lightweight conflict check: warn when two or more incomplete tasks share the same start_time.
+        Does not model overlapping durations—only exact same HH:MM.
+        """
+        by_time: dict[str, list[tuple[Pet, Task]]] = defaultdict(list)
+        for pet in owner.pets:
+            for task in pet.tasks:
+                if task.completed:
+                    continue
+                by_time[task.start_time].append((pet, task))
+        warnings: list[str] = []
+        for st, group in sorted(by_time.items()):
+            if len(group) <= 1:
+                continue
+            detail = "; ".join(f"{p.name}: {t.description}" for p, t in group)
+            warnings.append(
+                f"Conflict: {len(group)} tasks at {st} - {detail}. "
+                "Resolve by changing a start time or staggering care."
+            )
+        return warnings
 
     def build_plan(self, owner: Owner) -> DailyPlan:
         """Gather incomplete tasks from all pets, sort them, and attach explanations."""
